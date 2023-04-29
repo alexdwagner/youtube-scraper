@@ -17,65 +17,31 @@ from google.cloud import storage
 os.makedirs('webm_files', exist_ok=True)
 os.makedirs('wav_files', exist_ok=True)
 
-def save_videos_to_csv(youtube, channel_id, csv_file="videos.csv"):
-    videos = get_all_videos(youtube, channel_id)
+def build_youtube_service(api_key):
+    return build("youtube", "v3", developerKey=api_key)
 
-    with open(csv_file, mode="w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(["Video ID", "Title", "Description", "Published At", "Transcript Link"])
+def build_speech_client(service_account_file):
+    credentials = service_account.Credentials.from_service_account_file(service_account_file)
+    return speech.SpeechClient(credentials=credentials)
 
-        for video in videos:
-            writer.writerow([video["id"], video["title"], video["description"], video["publishedAt"], ""])
+def get_all_videos(youtube, channel_id):
+    videos = []
 
-def get_file_size(file_path):
-    return os.stat(file_path).st_size
+    # Retrieve video metadata
+    request = youtube.search().list(
+        channelId=channel_id,
+        type='video',
+        part='id,snippet',
+        maxResults=50,
+        fields='items(id(videoId),snippet(title,description,publishedAt))'
+    )
 
-def get_channel_id_from_url(youtube, channel_url):
-    custom_url = channel_url.split('/')[-1]
-    response = youtube.search().list(
-        part='snippet',
-        type='channel',
-        q=custom_url,
-        maxResults=1
-    ).execute()
-
-    if 'items' in response and response['items']:
-        return response['items'][0]['snippet']['channelId']
-    else:
-        raise ValueError(f"No channel found for the URL: {channel_url}")
-
-def get_authenticated_services():
-    credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
-    youtube = build('youtube', 'v3', developerKey=API_KEY)
-    speech_client = speech.SpeechClient(credentials=credentials)
-    return youtube, speech_client
-
-def get_video_ids(youtube, channel_id):
-    video_ids = []
-    page_token = None
-    while True:
-        request = youtube.search().list(
-            part='id',
-            channelId=channel_id,
-            type='video',
-            maxResults=50,
-            pageToken=page_token
-        )
+    while request:
         response = request.execute()
-        video_ids.extend([item['id']['videoId'] for item in response['items']])
-        page_token = response.get('nextPageToken')
-        if not page_token:
-            break
-    return video_ids
+        videos.extend(response['items'])
+        request = youtube.search().list_next(request, response)
 
-def upload_blob(bucket_name, source_file_name, destination_blob_name):
-    storage_client = storage.Client.from_service_account_json(SERVICE_ACCOUNT_FILE)
-    bucket = storage_client.get_bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-
-    blob.upload_from_filename(source_file_name)
-
-    print(f"File {source_file_name} uploaded to {destination_blob_name}.")
+    return videos
 
 def transcribe_video(youtube, speech_client, video_id):
     # Download the audio file
@@ -151,7 +117,14 @@ def transcribe_video(youtube, speech_client, video_id):
 
     return title, transcript
 
-    # Save the transcript to an HTML file
+def transcribe_video_to_html(youtube, speech_client, video_id):
+    # Transcribe the video
+    title, transcript = transcribe_video(youtube, speech_client, video_id)
+
+    if title is None or transcript is None:
+        return None, None
+
+    # Generate the HTML file
     html_filename = f"{video_id}.html"
     with open(html_filename, "w") as html_file:
         html_file.write("<html><body><pre>\n")
@@ -160,10 +133,34 @@ def transcribe_video(youtube, speech_client, video_id):
 
     return title, html_filename
 
+
+def get_channel_id_from_url(youtube, channel_url):
+    custom_url = channel_url.split('/')[-1]
+    response = youtube.search().list(
+        part='snippet',
+        type='channel',
+        q=custom_url,
+        maxResults=1
+    ).execute()
+
+    if 'items' in response and response['items']:
+        return response['items'][0]['snippet']['channelId']
+    else:
+        raise ValueError(f"No channel found for the URL: {channel_url}")
+
+def save_videos_to_csv(youtube, channel_id, csv_file="videos.csv"):
+    videos = get_all_videos(youtube, channel_id)
+
+    with open(csv_file, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Video ID", "Title", "Description", "Published At", "Transcript Link"])
+
+        for video in videos:
+            writer.writerow([video["id"], video["title"], video["description"], video["publishedAt"], ""])
+
 def main():
     youtube = build_youtube_service(API_KEY)
     speech_client = build_speech_client(SERVICE_ACCOUNT_FILE)
-
     channel_id = get_channel_id_from_url(youtube, CHANNEL_URL)
     save_videos_to_csv(youtube, channel_id)
 
