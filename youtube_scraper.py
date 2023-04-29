@@ -1,5 +1,7 @@
 import os
 import io
+import sys
+import csv
 import subprocess
 import re
 from tqdm import tqdm
@@ -14,6 +16,16 @@ from google.cloud import storage
 # Create the output folders if they don't exist
 os.makedirs('webm_files', exist_ok=True)
 os.makedirs('wav_files', exist_ok=True)
+
+def save_videos_to_csv(youtube, channel_id, csv_file="videos.csv"):
+    videos = get_all_videos(youtube, channel_id)
+
+    with open(csv_file, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Video ID", "Title", "Description", "Published At", "Transcript Link"])
+
+        for video in videos:
+            writer.writerow([video["id"], video["title"], video["description"], video["publishedAt"], ""])
 
 def get_file_size(file_path):
     return os.stat(file_path).st_size
@@ -64,10 +76,6 @@ def upload_blob(bucket_name, source_file_name, destination_blob_name):
     blob.upload_from_filename(source_file_name)
 
     print(f"File {source_file_name} uploaded to {destination_blob_name}.")
-
-import os
-import sys
-import time
 
 def transcribe_video(youtube, speech_client, video_id):
     # Download the audio file
@@ -143,22 +151,46 @@ def transcribe_video(youtube, speech_client, video_id):
 
     return title, transcript
 
+    # Save the transcript to an HTML file
+    html_filename = f"{video_id}.html"
+    with open(html_filename, "w") as html_file:
+        html_file.write("<html><body><pre>\n")
+        html_file.write(transcript)
+        html_file.write("</pre></body></html>")
+
+    return title, html_filename
+
 def main():
-    os.makedirs("webm_files", exist_ok=True)
-    os.makedirs("wav_files", exist_ok=True)
+    youtube = build_youtube_service(API_KEY)
+    speech_client = build_speech_client(SERVICE_ACCOUNT_FILE)
 
-    channel_url = 'https://www.youtube.com/@StrategyU'
+    channel_id = get_channel_id_from_url(youtube, CHANNEL_URL)
+    save_videos_to_csv(youtube, channel_id)
 
-    youtube, speech_client = get_authenticated_services()
-    channel_id = get_channel_id_from_url(youtube, channel_url)
-    video_ids = get_video_ids(youtube, channel_id)
+    with open("videos.csv", mode="r", newline="") as csvfile:
+        reader = csv.DictReader(csvfile)
+        rows = [row for row in reader]
 
-    for video_id in video_ids:
-        title, transcript = transcribe_video(youtube, speech_client, video_id)
-        if title is not None and transcript is not None:
-            print(f"{title}: {transcript}")
-        else:
-            print(f"Failed to transcribe video ID {video_id}")
+    with open("videos.csv", mode="w", newline="") as csvfile:
+        fieldnames = ["Video ID", "Title", "Description", "Published At", "Transcript Link"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
-if __name__ == '__main__':
+        transcribe_all = False
+        for row in rows:
+            video_id = row["Video ID"]
+            title = row["Title"]
+
+            if not transcribe_all:
+                should_transcribe = input(f"Transcribe '{title}'? (y/n/all): ").lower()
+                if should_transcribe == "all":
+                    transcribe_all = True
+
+            if transcribe_all or should_transcribe == "y":
+                title, html_filename = transcribe_video_to_html(youtube, speech_client, video_id)
+                row["Transcript Link"] = html_filename
+
+            writer.writerow(row)
+
+if __name__ == "__main__":
     main()
